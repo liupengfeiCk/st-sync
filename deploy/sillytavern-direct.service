@@ -1,0 +1,15 @@
+# Template: install.sh fills in the @...@ values.
+[Unit]
+Description=SillyTavern serving port @PORT@ directly (no st-sync)
+After=network-online.target
+Conflicts=sillytavern.service st-sync.service
+
+[Service]
+User=@ST_USER@
+WorkingDirectory=@ST_DIR@
+ExecStart=@NODE@ server.js --port @PORT@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+# Template: install.sh fills in the @...@ values.
+[Unit]
+Description=st-sync delta proxy in front of SillyTavern
+Requires=sillytavern.service
+After=sillytavern.service
+Conflicts=sillytavern-direct.service
+# Crash loop: give the public port back to SillyTavern directly.
+OnFailure=sillytavern-direct.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+User=@ST_USER@
+EnvironmentFile=/etc/st-sync/env
+ExecStart=@NODE@ --max-old-space-size=96 @PREFIX@/proxy.js
+Environment=MALLOC_ARENA_MAX=2
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+RestartSec=2
+# Auto-restarts skip the failed state, so OnFailure= only fires once the start limit is hit.
+RestartMode=direct
+MemoryHigh=200M
+MemoryMax=256M
+MemorySwapMax=0
+CPUQuota=80%
+TasksMax=64
+OOMScoreAdjust=800
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>st-sync test</title>
+</head>
+<body>
+<pre id="out">running...</pre>
+<script>
+(async () => {
+    const results = [];
+    const check = (name, ok, detail) => results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
+    const rawGet = (url) => new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url);
+        xhr.responseType = 'arraybuffer';
+        xhr.onload = () => resolve(new Uint8Array(xhr.response));
+        xhr.send();
+    });
+    const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+    const enc = new TextEncoder();
+    try {
+        check('shim loaded', !!window.__stSync);
+        await window.__stSync.store.clear();
+
+        for (const round of [1, 2]) {
+            const before = { ...window.__stSync.stats };
+            const response = await fetch('/api/big?v=0', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            const text = await response.text();
+            const raw = await rawGet('/api/big?v=0');
+            const received = window.__stSync.stats.downloadReceived - before.downloadReceived;
+            check(`download round ${round} identical`, same(enc.encode(text), raw), `${raw.length} bytes, received ${received}`);
+            check(`download round ${round} content-type`, response.headers.get('content-type').startsWith('application/json'), response.headers.get('content-type'));
+            if (round === 2) check('download round 2 uses cache', received < raw.length / 50, `received ${received}`);
+        }
+        {
+            const before = { ...window.__stSync.stats };
+            const json = await (await fetch('/api/big?v=7')).json();
+            const received = window.__stSync.stats.downloadReceived - before.downloadReceived;
+            check('changed download parsed', json.items[1234].text === 'changed-in-version-7');
+            check('changed download is small', received < 100000, `received ${received}`);
+        }
+
+        let doc = { settings: Array.from({ length: 30000 }, (_, i) => ({ k: i, v: 'value-' + i })) };
+        for (const round of [1, 2, 3]) {
+            if (round === 3) doc.settings[15000].v = 'edited';
+            const body = JSON.stringify(doc);
+            const before = { ...window.__stSync.stats };
+            const result = await (await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })).json();
+            const stored = await rawGet('/api/last');
+            const sent = window.__stSync.stats.uploadSent - before.uploadSent;
+            check(`upload round ${round} identical`, same(enc.encode(body), stored), `${stored.length} bytes, sent ${sent}`);
+            check(`upload round ${round} content-type`, result.type === 'application/json', result.type);
+            if (round > 1) check(`upload round ${round} is small`, sent < body.length / 20, `sent ${sent}`);
+        }
+
+        {
+            const body = JSON.stringify({ prompt: 'x'.repeat(200000) + 'tail' });
+            const before = { ...window.__stSync.stats };
+            const result = await new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/save');
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.onload = () => resolve(JSON.parse(xhr.responseText));
+                xhr.send(body);
+            });
+            const stored = await rawGet('/api/last');
+            check('xhr upload identical', same(enc.encode(body), stored), `sent ${window.__stSync.stats.uploadSent - before.uploadSent} of ${body.length}`);
+            check('xhr upload content-type', result.type === 'application/json', result.type);
+        }
+
+        {
+            const xhrSave = (body) => new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/save');
+                xhr.setRequestHeader('Content-Type', 'application/json');
+                xhr.onload = () => resolve(xhr.status);
+                xhr.send(body);
+            });
+            const messages = Array.from({ length: 300 }, (_, i) => ({ role: 'user', content: `message ${i} ` + 'lorem ipsum dolor sit amet '.repeat(20) }));
+            const first = JSON.stringify(messages);
+            messages.push({ role: 'assistant', content: 'a new reply' });
+            const second = JSON.stringify(messages);
+            await xhrSave(first);
+            const before = window.__stSync.stats.uploadSent;
+            const status = await xhrSave(second);
+            const sent = window.__stSync.stats.uploadSent - before;
+            const stored = await rawGet('/api/last');
+            check('xhr delta upload identical', status === 200 && same(enc.encode(second), stored), `sent ${sent} of ${second.length}`);
+            check('xhr delta upload is small', sent < second.length / 20, `sent ${sent}`);
+        }
+
+        {
+            const big = JSON.stringify({ rows: Array.from({ length: 60000 }, (_, i) => ({ i, s: 'worker-row-' + i * 7 })) });
+            for (const round of [1, 2]) {
+                const before = { ...window.__stSync.stats };
+                await (await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: big })).json();
+                const stored = await rawGet('/api/last');
+                const sent = window.__stSync.stats.uploadSent - before.uploadSent;
+                check(`worker upload round ${round} identical`, same(enc.encode(big), stored), `${stored.length} bytes, sent ${sent}`);
+                if (round === 2) check('worker upload round 2 is small', sent < big.length / 20, `sent ${sent}`);
+            }
+        }
+
+        {
+            const before = { ...window.__stSync.stats };
+            const response = await fetch('/api/huge?mb=12&seed=page');
+            const got = new Uint8Array(await response.arrayBuffer());
+            const raw = await rawGet('/api/huge?mb=12&seed=page');
+            const received = window.__stSync.stats.downloadReceived - before.downloadReceived;
+            check('windowed 12MB download identical', same(got, raw), `${raw.length} bytes, received ${received}, content-length ${response.headers.get('content-length')}`);
+        }
+
+        {
+            const response = await fetch('/api/sse', { method: 'POST', body: '{}' });
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            const times = [];
+            let text = '';
+            const t0 = performance.now();
+            for (;;) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                times.push(Math.round(performance.now() - t0));
+                text += decoder.decode(value);
+            }
+            check('sse streamed incrementally', times.length >= 4 && text.includes('data: 4'), `reads at ${times.join(',')}ms`);
+        }
+
+        {
+            const controller = new AbortController();
+            const promise = fetch('/api/slow', { method: 'POST', body: '{}', signal: controller.signal }).then((r) => r.text()).catch((e) => e.name);
+            await new Promise((r) => setTimeout(r, 500));
+            controller.abort();
+            const outcome = await promise;
+            await new Promise((r) => setTimeout(r, 300));
+            const state = await (await fetch('/api/state')).json();
+            check('abort propagates upstream', outcome === 'AbortError' && state.aborted === 1, `outcome ${outcome}, upstream aborted ${state.aborted}`);
+        }
+
+        {
+            const small = await (await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"a":1}' })).json();
+            check('small upload passthrough', small.length === 7);
+        }
+        check('shim still active', window.__stSync.info().active, JSON.stringify(window.__stSync.info()));
+    } catch (err) {
+        results.push('ERROR ' + (err && err.stack || err));
+    }
+    document.getElementById('out').textContent = results.join('\n') + '\nDONE';
+})();
+</script>
+</body>
+</html>

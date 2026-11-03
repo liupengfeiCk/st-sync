@@ -1,0 +1,13 @@
+# Template: install.sh fills in the @...@ values.
+[Unit]
+Description=SillyTavern on 127.0.0.1:@UPSTREAM_PORT@, behind st-sync
+After=network-online.target
+Conflicts=sillytavern-direct.service
+
+[Service]
+User=@ST_USER@
+WorkingDirectory=@ST_DIR@
+# listen must stay true: SillyTavern only enforces basic auth and the whitelist when listening.
+ExecStart=@NODE@ server.js --port @UPSTREAM_PORT@ --listen true --listenAddressIPv4 127.0.0.1 --enableIPv6 false
+Restart=on-failure
+RestartSec=5

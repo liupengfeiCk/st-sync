@@ -1,0 +1,14 @@
+# Template: install.sh fills in the @...@ values.
+[Unit]
+Description=Switches back to direct SillyTavern when st-sync stops answering
+After=st-sync.service
+
+[Service]
+ExecStart=@PREFIX@/deploy/st-sync-guard.sh
+Restart=always
+RestartSec=10
+MemoryMax=32M
+CPUQuota=10%
+
+[Install]
+WantedBy=multi-user.target

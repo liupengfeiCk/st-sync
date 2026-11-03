@@ -1,0 +1,30 @@
+#!/bin/bash
+# st-mode direct | proxy | off | on | boot direct|proxy | status
+#   direct      the public port is served by SillyTavern itself, st-sync stopped
+#   proxy       the public port is served by st-sync, SillyTavern on 127.0.0.1:<upstream port>
+#   off/on      keep st-sync running but pass everything through / resume delta sync
+#   boot MODE   which of the two starts at boot
+set -e
+. /etc/st-sync/env
+case "${1:-status}" in
+    direct) systemctl start sillytavern-direct.service ;;
+    proxy) systemctl reset-failed st-sync.service 2>/dev/null || true; systemctl start st-sync.service ;;
+    off) touch /etc/st-sync/off ;;
+    on) rm -f /etc/st-sync/off ;;
+    boot)
+        case "${2:-}" in
+            direct) systemctl disable -q st-sync.service; systemctl enable -q sillytavern-direct.service ;;
+            proxy) systemctl disable -q sillytavern-direct.service; systemctl enable -q st-sync.service ;;
+            *) echo "usage: st-mode boot direct|proxy" >&2; exit 2 ;;
+        esac ;;
+    status) ;;
+    *) echo "usage: st-mode direct|proxy|off|on|boot direct|proxy|status" >&2; exit 2 ;;
+esac
+sleep 1
+for unit in sillytavern-direct sillytavern st-sync st-sync-guard; do
+    printf '%-20s %-10s boot: %s\n' "$unit" "$(systemctl is-active $unit.service)" "$(systemctl is-enabled $unit.service 2>/dev/null)"
+done
+[ -e /etc/st-sync/off ] && echo "off switch: present" || echo "off switch: absent"
+host=${ST_SYNC_LISTEN_HOST:-0.0.0.0}
+[ "$host" = 0.0.0.0 ] && host=127.0.0.1
+curl -s -m 3 "http://$host:$ST_SYNC_LISTEN_PORT/__sync/health" && echo || echo "no st-sync health on port $ST_SYNC_LISTEN_PORT"
